@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Reader - XTTS v2</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #0b1020;
+        color: #e8ecff;
+      }
+
+      .container {
+        max-width: 920px;
+        margin: 24px auto;
+        padding: 0 16px 32px;
+      }
+
+      h1 {
+        margin-bottom: 8px;
+      }
+
+      .desc {
+        color: #b7bfdf;
+        margin-top: 0;
+      }
+
+      .card {
+        background: #121933;
+        border: 1px solid #27315e;
+        border-radius: 14px;
+        padding: 16px;
+        margin-top: 14px;
+      }
+
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+
+      button {
+        border: none;
+        border-radius: 10px;
+        padding: 10px 14px;
+        cursor: pointer;
+        color: white;
+        font-weight: 600;
+      }
+
+      button.primary {
+        background: #4e7cff;
+      }
+
+      button.success {
+        background: #0f9f6e;
+      }
+
+      button.warn {
+        background: #c26d0b;
+      }
+
+      button[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      textarea,
+      select {
+        width: 100%;
+        margin-top: 10px;
+        background: #0c132b;
+        border: 1px solid #2a376f;
+        color: #f5f7ff;
+        border-radius: 10px;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+
+      textarea {
+        min-height: 220px;
+        resize: vertical;
+      }
+
+      audio {
+        width: 100%;
+        margin-top: 10px;
+      }
+
+      .muted {
+        color: #9ca7d8;
+        font-size: 13px;
+      }
+
+      .status {
+        margin-top: 8px;
+        color: #93f2bd;
+        font-size: 14px;
+      }
+
+      .error {
+        color: #ff9090;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Voice Reader</h1>
+      <p class="desc">录制参考音频，使用 Coqui XTTS v2 进行少样本克隆，再把长文本合成为语音。</p>
+
+      <section class="card">
+        <h3>1) 录制并上传参考音频</h3>
+        <div class="row">
+          <button id="btnStart" class="primary">开始录音</button>
+          <button id="btnStop" class="warn" disabled>停止录音</button>
+          <button id="btnUploadRef" class="success" disabled>上传参考音</button>
+        </div>
+        <p class="muted">建议录制 8~20 秒，环境噪声越小越好。</p>
+        <audio id="referencePreview" controls></audio>
+        <div id="refStatus" class="status">未录音</div>
+      </section>
+
+      <section class="card">
+        <h3>2) 输入长文本并合成</h3>
+        <label for="language">语言</label>
+        <select id="language">
+          <option value="zh-cn" selected>中文（zh-cn）</option>
+          <option value="en">English (en)</option>
+          <option value="ja">日本語 (ja)</option>
+          <option value="ko">한국어 (ko)</option>
+        </select>
+        <textarea
+          id="textInput"
+          placeholder="在这里粘贴要朗读的长文本。系统会自动分段并拼接语音。"
+        ></textarea>
+        <div class="row">
+          <button id="btnSynthesize" class="primary">合成并播放</button>
+        </div>
+        <audio id="resultAudio" controls></audio>
+        <div id="synthStatus" class="status">等待输入文本</div>
+      </section>
+
+      <section class="card">
+        <h3>系统状态</h3>
+        <div id="healthStatus" class="muted">正在检查后端服务...</div>
+      </section>
+    </main>
+
+    <script>
+      const btnStart = document.getElementById("btnStart");
+      const btnStop = document.getElementById("btnStop");
+      const btnUploadRef = document.getElementById("btnUploadRef");
+      const btnSynthesize = document.getElementById("btnSynthesize");
+      const referencePreview = document.getElementById("referencePreview");
+      const resultAudio = document.getElementById("resultAudio");
+      const refStatus = document.getElementById("refStatus");
+      const synthStatus = document.getElementById("synthStatus");
+      const healthStatus = document.getElementById("healthStatus");
+      const textInput = document.getElementById("textInput");
+      const language = document.getElementById("language");
+
+      let mediaRecorder = null;
+      let stream = null;
+      let recordedChunks = [];
+      let referenceBlob = null;
+      let referenceId = null;
+
+      function setStatus(node, message, isError = false) {
+        node.textContent = message;
+        node.classList.toggle("error", isError);
+      }
+
+      async function checkHealth() {
+        try {
+          const response = await fetch("/api/health");
+          const data = await response.json();
+          healthStatus.textContent =
+            `后端状态: ${data.status}, ffmpeg: ${data.ffmpeg_available ? "可用" : "缺失"}, ` +
+            `模型已加载: ${data.model_loaded ? "是" : "否"}, 参考音缓存: ${data.references_cached}`;
+        } catch (error) {
+          healthStatus.textContent = `后端不可用: ${error.message}`;
+        }
+      }
+
+      btnStart.addEventListener("click", async () => {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          recordedChunks = [];
+          mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+              recordedChunks.push(event.data);
+            }
+          };
+          mediaRecorder.onstop = () => {
+            referenceBlob = new Blob(recordedChunks, { type: "audio/webm" });
+            const localUrl = URL.createObjectURL(referenceBlob);
+            referencePreview.src = localUrl;
+            btnUploadRef.disabled = false;
+            setStatus(refStatus, "录音完成，请点击“上传参考音”。");
+          };
+          mediaRecorder.start();
+          btnStart.disabled = true;
+          btnStop.disabled = false;
+          btnUploadRef.disabled = true;
+          setStatus(refStatus, "正在录音...");
+        } catch (error) {
+          setStatus(refStatus, `无法录音: ${error.message}`, true);
+        }
+      });
+
+      btnStop.addEventListener("click", () => {
+        if (!mediaRecorder) return;
+        mediaRecorder.stop();
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+      });
+
+      btnUploadRef.addEventListener("click", async () => {
+        if (!referenceBlob) {
+          setStatus(refStatus, "请先录音。", true);
+          return;
+        }
+        try {
+          btnUploadRef.disabled = true;
+          setStatus(refStatus, "上传中...");
+          const formData = new FormData();
+          formData.append("file", new File([referenceBlob], "reference.webm", { type: "audio/webm" }));
+          const response = await fetch("/api/reference", { method: "POST", body: formData });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.detail || "上传失败");
+          }
+          referenceId = data.reference_id;
+          setStatus(refStatus, `上传成功，时长 ${data.duration_sec}s，参考音 ID: ${referenceId}`);
+          await checkHealth();
+        } catch (error) {
+          setStatus(refStatus, `上传失败: ${error.message}`, true);
+          btnUploadRef.disabled = false;
+        }
+      });
+
+      btnSynthesize.addEventListener("click", async () => {
+        const text = textInput.value.trim();
+        if (!referenceId) {
+          setStatus(synthStatus, "请先录音并上传参考音。", true);
+          return;
+        }
+        if (!text) {
+          setStatus(synthStatus, "请输入需要合成的文本。", true);
+          return;
+        }
+        try {
+          btnSynthesize.disabled = true;
+          setStatus(synthStatus, "正在合成，请稍候...");
+          const response = await fetch("/api/synthesize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              reference_id: referenceId,
+              text,
+              language: language.value,
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.detail || "合成失败");
+          }
+          resultAudio.src = data.audio_url;
+          await resultAudio.play();
+          setStatus(synthStatus, `合成成功，共 ${data.chunks} 段。`);
+        } catch (error) {
+          setStatus(synthStatus, `合成失败: ${error.message}`, true);
+        } finally {
+          btnSynthesize.disabled = false;
+        }
+      });
+
+      checkHealth();
+    </script>
+  </body>
+</html>
