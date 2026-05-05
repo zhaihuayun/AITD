@@ -7,6 +7,10 @@
 3. 粘贴长文本并合成语音
 4. 直接在网页里播放结果
 
+## 文档导航
+
+- 入门与部署教程：[`docs/tutorial-and-deploy.md`](./docs/tutorial-and-deploy.md)
+
 ## 技术栈
 
 - 后端：FastAPI
