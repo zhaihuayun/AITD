@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from TTS.api import TTS
+from TTS.tts.configs.xtts_config import XttsConfig
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -126,6 +127,18 @@ def _split_text(text: str, max_chars: int = 180) -> list[str]:
 def _get_tts_model() -> TTS:
     global _tts_model
     if _tts_model is None:
+        # Torch 2.6+ 将 torch.load 默认切到 weights_only=True，需要显式允许 XTTS 配置类反序列化。
+        torch.serialization.add_safe_globals([XttsConfig])
+        # 兼容 Torch 2.6+ 的默认行为变化，避免 XTTS checkpoint 被 weights_only 模式拒绝。
+        if not getattr(_get_tts_model, "_torch_load_patched", False):
+            original_torch_load = torch.load
+
+            def _torch_load_compat(*args: Any, **kwargs: Any) -> Any:
+                kwargs.setdefault("weights_only", False)
+                return original_torch_load(*args, **kwargs)
+
+            torch.load = _torch_load_compat  # type: ignore[assignment]
+            setattr(_get_tts_model, "_torch_load_patched", True)
         model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2")
         if torch.cuda.is_available():
             model.to("cuda")

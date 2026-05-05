@@ -22,6 +22,8 @@ Voice Reader 是一个本地网页工具，支持以下流程：
 - 后端：FastAPI
 - 前端：原生 HTML/CSS/JS（`static/index.html`）
 - TTS：`TTS==0.22.0`
+- Transformers：`4.41.2`（与 XTTS 兼容）
+- TorchCodec：用于当前 torchaudio 路径的音频加载支持
 
 ---
 
@@ -199,6 +201,28 @@ PYTHON_BIN=/path/to/python3.11 ./run.sh
 
 - 这是正常现象，后续请求会更快
 - 若有 GPU，速度会明显提升
+
+### 6.5 报错：`cannot import name 'BeamSearchScorer'`
+
+原因：`transformers` 版本过新，和 XTTS 当前代码不兼容。
+
+处理：
+
+- 固定使用 `transformers==4.41.2`
+- 重新安装依赖并重启服务：
+  ```bash
+  pip install -r requirements.txt
+  ./run.sh
+  ```
+
+### 6.6 报错：`TorchCodec is required for load_with_torchcodec`
+
+原因：当前 torchaudio 路径需要 `torchcodec` 进行音频解码。
+
+处理：
+
+- 安装 `torchcodec`（本项目已在 requirements 中固定）
+- 重新安装依赖并重启服务
 
 ---
 

@@ -16,6 +16,8 @@
 - 后端：FastAPI
 - 前端：`static/index.html`（原生 HTML/CSS/JS）
 - TTS：`TTS==0.22.0`（XTTS v2）
+- Transformers：`4.41.2`（与 XTTS 兼容）
+- TorchCodec：`torchcodec`（torchaudio 新版本解码依赖）
 - 默认端口：`8765`
 - 依赖系统命令：`ffmpeg`
 
@@ -66,3 +68,4 @@ cd voice-reader
 
 - 首次合成会加载 XTTS 模型，耗时可能较长。
 - 使用 CPU 也可运行，但速度会较慢；有 CUDA 时会自动使用 GPU。
+- 为避免 XTTS 与新版本 `transformers` 不兼容，依赖中已固定 `transformers<5`。

@@ -172,6 +172,15 @@
       let referenceBlob = null;
       let referenceId = null;
 
+      async function parseApiResponse(response) {
+        const raw = await response.text();
+        try {
+          return raw ? JSON.parse(raw) : {};
+        } catch (_error) {
+          return { detail: raw || `HTTP ${response.status}` };
+        }
+      }
+
       function setStatus(node, message, isError = false) {
         node.textContent = message;
         node.classList.toggle("error", isError);
@@ -180,7 +189,7 @@
       async function checkHealth() {
         try {
           const response = await fetch("/api/health");
-          const data = await response.json();
+          const data = await parseApiResponse(response);
           healthStatus.textContent =
             `后端状态: ${data.status}, ffmpeg: ${data.ffmpeg_available ? "可用" : "缺失"}, ` +
             `模型已加载: ${data.model_loaded ? "是" : "否"}, 参考音缓存: ${data.references_cached}`;
@@ -237,7 +246,7 @@
           const formData = new FormData();
           formData.append("file", new File([referenceBlob], "reference.webm", { type: "audio/webm" }));
           const response = await fetch("/api/reference", { method: "POST", body: formData });
-          const data = await response.json();
+          const data = await parseApiResponse(response);
           if (!response.ok) {
             throw new Error(data.detail || "上传失败");
           }
