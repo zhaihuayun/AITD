@@ -138,8 +138,12 @@ def _concat_wavs(inputs: list[Path], output_file: Path) -> None:
         shutil.copy2(inputs[0], output_file)
         return
     concat_list = output_file.with_suffix(".txt")
+    concat_lines = []
+    for path in inputs:
+        safe_path = str(path).replace("'", "'\\''")
+        concat_lines.append(f"file '{safe_path}'\n")
     concat_list.write_text(
-        "".join(f"file '{str(path).replace(\"'\", \"'\\\\''\")}'\n" for path in inputs),
+        "".join(concat_lines),
         encoding="utf-8",
     )
     _run_ffmpeg(
