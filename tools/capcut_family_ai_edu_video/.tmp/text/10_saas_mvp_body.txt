@@ -1,0 +1,5 @@
+技术栈：Next.js / FastAPI / PostgreSQL / OpenAI / Vercel+Supabase
+订阅：免费 / 家庭版$5月 / AI高级版$15月
+
+MVP先跑通：打卡系统 + AI评分 + Dashboard + 周报生成
+闭环跑通就可以开始收费
