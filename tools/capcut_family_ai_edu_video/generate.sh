@@ -5,7 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="${ROOT_DIR}/out"
 TMP_DIR="${ROOT_DIR}/.tmp"
 SCRIPT_JSON="${ROOT_DIR}/script.json"
-SRT_IN="${ROOT_DIR}/subtitles.srt"
+SRT_STATIC="${ROOT_DIR}/subtitles.srt"
+SRT_GEN_PY="${ROOT_DIR}/generate_srt.py"
+NARRATION_TXT="${ROOT_DIR}/narration.txt"
 
 mkdir -p "${OUT_DIR}" "${TMP_DIR}"
 
@@ -48,7 +50,7 @@ TXT_DIR="${TMP_DIR}/text"
 mkdir -p "${SEG_DIR}" "${TXT_DIR}"
 
 python3 - "${SCRIPT_JSON}" "${TXT_DIR}" <<'PY'
-import json, os, sys, textwrap, re
+import json, os, sys, re
 
 script_path, txt_dir = sys.argv[1], sys.argv[2]
 with open(script_path, "r", encoding="utf-8") as f:
@@ -57,6 +59,35 @@ with open(script_path, "r", encoding="utf-8") as f:
 def safe(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "_", s)
     return s.strip("_") or "seg"
+
+def wrap_zh(line: str, width: int = 26) -> list[str]:
+    """
+    Simple Chinese-friendly wrapping.
+    Prefer breaking on spaces or punctuation; fall back to hard wrap.
+    """
+    line = (line or "").strip()
+    if not line:
+        return [""]
+    out = []
+    buf = ""
+    for ch in line:
+        buf += ch
+        if len(buf) >= width:
+            # backtrack to last preferred breakpoint
+            break_at = -1
+            for i in range(len(buf) - 1, max(-1, len(buf) - 10), -1):
+                if buf[i] in " ，。；、/ )】】》》→-+" or buf[i].isspace():
+                    break_at = i + 1
+                    break
+            if break_at == -1:
+                out.append(buf)
+                buf = ""
+            else:
+                out.append(buf[:break_at].rstrip())
+                buf = buf[break_at:].lstrip()
+    if buf:
+        out.append(buf)
+    return out
 
 segments = data["segments"]
 
@@ -67,7 +98,15 @@ with open(manifest_path, "w", encoding="utf-8") as mf:
         dur = float(seg["duration_sec"])
         title = seg.get("title", "").strip()
         lines = seg.get("lines", [])
-        body = "\n".join([l.rstrip() for l in lines]).strip()
+        # Wrap each line to avoid clipping in 1080p.
+        wrapped_lines: list[str] = []
+        for raw in lines:
+            raw = raw.rstrip()
+            if not raw.strip():
+                wrapped_lines.append("")
+                continue
+            wrapped_lines.extend(wrap_zh(raw, width=26))
+        body = "\n".join(wrapped_lines).strip()
 
         title_path = os.path.join(txt_dir, f"{sid}_title.txt")
         body_path = os.path.join(txt_dir, f"{sid}_body.txt")
@@ -79,8 +118,6 @@ with open(manifest_path, "w", encoding="utf-8") as mf:
         mf.write("\t".join([sid, f"{dur:.3f}", title_path, body_path]) + "\n")
 print(manifest_path)
 PY
-
-MANIFEST_TSV="$(python3 -c "import sys; print(open('${TXT_DIR}/manifest.tsv','r',encoding='utf-8').read().strip().splitlines()[0] if False else '${TXT_DIR}/manifest.tsv')")"
 
 render_segment() {
   local sid="$1"
@@ -96,7 +133,7 @@ render_segment() {
     -vf "\
 drawbox=x=120:y=110:w=${W}-240:h=8:color=${ACCENT}@1:t=fill,\
 drawtext=fontfile='${FONT_FILE}':textfile='${title_file}':reload=1:fontcolor=${ACCENT}:fontsize=72:x=(w-text_w)/2:y=160,\
-drawtext=fontfile='${FONT_FILE}':textfile='${body_file}':reload=1:fontcolor=white:fontsize=44:line_spacing=18:x=160:y=320,\
+drawtext=fontfile='${FONT_FILE}':textfile='${body_file}':reload=1:fontcolor=white:fontsize=40:line_spacing=16:x=150:y=320,\
 drawbox=x=120:y=${H}-150:w=${W}-240:h=1:color=white@0.15:t=fill,\
 drawtext=fontfile='${FONT_FILE}':text='家庭AI教育系统 V1  ·  口播讲解底片':fontcolor=white@0.65:fontsize=28:x=140:y=${H}-120" \
     -c:v libx264 -profile:v high -level 4.1 -pix_fmt yuv420p -r ${FPS} -g 60 -crf 18 \
@@ -122,12 +159,56 @@ ffmpeg -nostdin -y -hide_banner -loglevel error \
   -c copy \
   "${FINAL_MP4}"
 
-cp -f "${SRT_IN}" "${OUT_DIR}/family-ai-edu-v1-5min.srt"
+FINAL_SRT="${OUT_DIR}/family-ai-edu-v1-5min.srt"
+
+# Prefer generating SRT from script.json to keep timing exact.
+if [[ -f "${SRT_GEN_PY}" ]]; then
+  python3 "${SRT_GEN_PY}" "${SCRIPT_JSON}" "${FINAL_SRT}"
+else
+  cp -f "${SRT_STATIC}" "${FINAL_SRT}"
+fi
+
+# Optional: generate TTS narration and mux into MP4.
+WITH_TTS=1
+if [[ "${WITH_TTS}" == "1" ]]; then
+  if ! python3 -c "import edge_tts" >/dev/null 2>&1; then
+    # Best effort install (user/site). If install fails, we'll keep silent video.
+    python3 -m pip install --user -q edge-tts >/dev/null 2>&1 || true
+  fi
+
+  if python3 -c "import edge_tts" >/dev/null 2>&1 && [[ -f "${NARRATION_TXT}" ]]; then
+    TTS_MP3="${TMP_DIR}/narration.mp3"
+    python3 - "${NARRATION_TXT}" "${TTS_MP3}" <<'PY'
+import asyncio, sys
+from pathlib import Path
+import edge_tts
+
+txt_path = Path(sys.argv[1])
+out_mp3 = Path(sys.argv[2])
+text = txt_path.read_text(encoding="utf-8").strip()
+
+async def run():
+    communicate = edge_tts.Communicate(text=text, voice="zh-CN-XiaoxiaoNeural", rate="+0%")
+    await communicate.save(str(out_mp3))
+
+asyncio.run(run())
+PY
+
+    FINAL_WITH_AUDIO="${OUT_DIR}/family-ai-edu-v1-5min-with-tts.mp4"
+    ffmpeg -nostdin -y -hide_banner -loglevel error \
+      -i "${FINAL_MP4}" -i "${TTS_MP3}" \
+      -c:v copy -c:a aac -b:a 160k -shortest \
+      -movflags +faststart \
+      "${FINAL_WITH_AUDIO}"
+    # Overwrite default output to be the with-audio version.
+    mv -f "${FINAL_WITH_AUDIO}" "${FINAL_MP4}"
+  fi
+fi
 
 # Also copy to artifacts folder if available (Cursor Cloud).
 if [[ -d "/opt/cursor/artifacts" ]]; then
   cp -f "${FINAL_MP4}" "/opt/cursor/artifacts/family-ai-edu-v1-5min.mp4"
-  cp -f "${OUT_DIR}/family-ai-edu-v1-5min.srt" "/opt/cursor/artifacts/family-ai-edu-v1-5min.srt"
+  cp -f "${FINAL_SRT}" "/opt/cursor/artifacts/family-ai-edu-v1-5min.srt"
   echo "Artifacts:"
   echo "  /opt/cursor/artifacts/family-ai-edu-v1-5min.mp4"
   echo "  /opt/cursor/artifacts/family-ai-edu-v1-5min.srt"
@@ -135,5 +216,5 @@ fi
 
 echo "Done:"
 echo "  ${FINAL_MP4}"
-echo "  ${OUT_DIR}/family-ai-edu-v1-5min.srt"
+echo "  ${FINAL_SRT}"
 
